@@ -166,53 +166,70 @@ def generate_html_report(output_dir, extracted_data, all_genes, all_species, gen
         category_data.append({
             'name': category.capitalize(),
             'count': count,
-            'percentage': count/total_sequences,
+            'percentage': count/total_sequences if total_sequences > 0 else 0,
             'genes': defaultdict(int)
         })
     
     # Count genes per category
     for gene, seq_records in extracted_data.items():
-        category = seq_records[0][1]  # Get category from first record
-        for cat in category_data:
-            if cat['name'].lower() == category:
-                cat['genes'][gene] += len(seq_records)
-                break
+        if seq_records:  # Check if there are any records
+            category = seq_records[0][1]  # Get category from first record
+            for cat in category_data:
+                if cat['name'].lower() == category:
+                    cat['genes'][gene] += len(seq_records)
+                    break
     
     # Sort categories by count
     category_data.sort(key=lambda x: -x['count'])
     
     # Prepare report sections
-    common_genes = "\n".join(
-        f"<tr><td>{gene}</td><td>{count}</td><td>{count/total_sequences:.1%}</td></tr>"
-        for gene, count in sorted_genes[:20]
+    common_genes = (
+        "\n".join(
+            f"<tr><td>{gene}</td><td>{count}</td><td>{(count / total_sequences):.1%}</td></tr>"
+            for gene, count in sorted_genes[:20]
+        )
+        if total_sequences > 0
+        else "<tr><td colspan='3'>No genes found</td></tr>"
+    ) if sorted_genes else "<tr><td colspan='3'>No genes found</td></tr>"
+
+    all_genes_list = (
+        "\n".join(
+            f"<tr><td>{gene}</td><td>{count}</td><td>{(count / total_sequences):.1%}</td></tr>"
+            for gene, count in sorted_genes
+        )
+        if total_sequences > 0
+        else "<tr><td colspan='3'>No genes found</td></tr>"
+    ) if sorted_genes else "<tr><td colspan='3'>No genes found</td></tr>"
+
+    species_list = (
+        "\n".join(
+            f"<tr><td>{sp}</td><td>{sum(1 for seqs in extracted_data.values() for s in seqs if sp in s[0].description)}</td></tr>"
+            for sp in sorted(all_species)
+        )
+        if all_species
+        else "<tr><td colspan='2'>No species found</td></tr>"
     )
-    
-    all_genes_list = "\n".join(
-        f"<tr><td>{gene}</td><td>{count}</td><td>{count/total_sequences:.1%}</td></tr>"
-        for gene, count in sorted_genes
-    )
-    
-    species_list = "\n".join(
-        f"<tr><td>{sp}</td><td>{sum(1 for seqs in extracted_data.values() for s in seqs if sp in s[0].description)}</td></tr>"
-        for sp in sorted(all_species)
-    )
-    
-    sequences_table = "\n".join(
-        f"""<tr>
-            <td>{gene}</td>
-            <td>{seq.id}</td>
-            <td>{seq.description.split('|')[-1].strip()}</td>
-            <td>{len(seq.seq)}</td>
-            <td>{category}</td>
-        </tr>"""
-        for gene, seq_records in extracted_data.items()
-        for seq, category in seq_records
-    )
+
+    sequences_table = (
+        "\n".join(
+            f"""<tr>
+                <td>{gene}</td>
+                <td>{seq.id}</td>
+                <td>{seq.description.split('|')[-1].strip()}</td>
+                <td>{len(seq.seq)}</td>
+                <td>{category}</td>
+            </tr>"""
+            for gene, seq_records in extracted_data.items()
+            for seq, category in seq_records
+        )
+        if extracted_data
+        else "<tr><td colspan='5'>No sequences found</td></tr>"
+)
     
     category_chart_data = ",".join(
         f"{{label: '{cat['name']}', value: {cat['count']}}}"
         for cat in category_data
-    )
+    ) if category_data else ""
     
     category_table = "\n".join(
         f"""<tr>
@@ -222,13 +239,19 @@ def generate_html_report(output_dir, extracted_data, all_genes, all_species, gen
             <td>{', '.join(sorted(cat['genes'].keys())[:5]) + ('...' if len(cat['genes']) > 5 else '')}</td>
         </tr>"""
         for cat in category_data
-    )
+    ) if category_data else "<tr><td colspan='4'>No categories found</td></tr>"
     
-    # Phylogenetic marker gene suggestions
+    # Expanded Phylogenetic marker gene suggestions
     PHYLOGENETIC_MARKERS = {
+        'universal': {
+            'Highly Recommended': ['rpoB', 'rpoD', 'gyrB', 'groEL', 'atpD', 'dnaJ', 'recA', 'tuf', 'fusA'],
+            'Recommended': ['rpoA', 'rpoC', 'dnaK', 'dnaG', 'infB', 'nusA', 'pgk', 'pyrG', 'rpsA'],
+            'rRNA genes': ['16S rRNA', '23S rRNA', '5S rRNA'],
+            'tRNA genes': ['tRNA-Leu', 'tRNA-Ala', 'tRNA-Val', 'tRNA-Ile']
+        },
         'plastome': {
-            'Highly Recommended': ['rbcL', 'matK', 'ndhF', 'atpB', 'rpoC2'],
-            'Recommended': ['psbA', 'psbB', 'psbC', 'psbD', 'rpoB', 'ycf1', 'ycf2'],
+            'Core Genes': ['rbcL', 'matK', 'ndhF', 'atpB', 'rpoC2', 'psbA', 'psbB', 'psbC', 'psbD'],
+            'Variable Genes': ['ycf1', 'ycf2', 'ycf3', 'ycf4', 'accD', 'clpP'],
             'rRNA genes': ['rrn16', 'rrn23', 'rrn5', 'rrn4.5'],
             'tRNA genes': ['trnK-UUU', 'trnL-UAA', 'trnF-GAA', 'trnH-GUG']
         },
@@ -238,20 +261,20 @@ def generate_html_report(output_dir, extracted_data, all_genes, all_species, gen
             'tRNA genes': ['trnM', 'trnW', 'trnQ', 'trnY']
         },
         'bacterial': {
-            'Universal': ['16S rRNA', '23S rRNA'],
-            'Protein-coding': ['rpoB', 'gyrB', 'recA', 'dnaK', 'tuf', 'fusA'],
-            'Housekeeping': ['rpoD', 'groEL', 'atpD', 'dnaJ']
+            'Housekeeping': ['rpoD', 'groEL', 'atpD', 'dnaJ', 'gyrA', 'gyrB', 'recA', 'tuf'],
+            'Metabolic': ['gltA', 'gltB', 'gltD', 'gltF', 'gltK', 'gltL', 'gltP', 'gltS'],
+            'Specialized': ['nifH', 'nifD', 'nifK', 'nodA', 'nodB', 'nodC']
         }
     }
     
-    # Prepare phylogenetic markers section
+    # Prepare phylogenetic markers section with more detailed recommendations
     marker_html = ""
     for genome_type, categories in PHYLOGENETIC_MARKERS.items():
         marker_html += f"""
         <div class="marker-category">
             <h3>{genome_type.capitalize()} Markers</h3>
             <table>
-                <tr><th>Category</th><th>Suggested Genes</th><th>In Your Data</th></tr>
+                <tr><th>Category</th><th>Suggested Genes</th><th>In Your Data</th><th>Recommendation</th></tr>
         """
         
         for category, genes in categories.items():
@@ -259,7 +282,7 @@ def generate_html_report(output_dir, extracted_data, all_genes, all_species, gen
             missing_genes = []
             
             for gene in genes:
-                if gene.lower() in (g.lower() for g in all_genes):
+                if any(gene.lower() == g.lower() for g in all_genes):
                     present_genes.append(gene)
                 else:
                     missing_genes.append(gene)
@@ -267,13 +290,22 @@ def generate_html_report(output_dir, extracted_data, all_genes, all_species, gen
             present_html = "<span style='color:green'>" + ", ".join(present_genes) + "</span>" if present_genes else "-"
             missing_html = "<span style='color:red'>" + ", ".join(missing_genes) + "</span>" if missing_genes else "-"
             
-            all_genes_list = present_genes + missing_genes
+            recommendation = ""
+            if genome_type == 'universal' and category == 'Highly Recommended':
+                if len(present_genes) >= 3:
+                    recommendation = "Excellent: You have enough markers for robust phylogeny"
+                elif len(present_genes) >= 1:
+                    recommendation = "Good: Consider adding more markers from this category"
+                else:
+                    recommendation = "Poor: Try to include at least 3 markers from this category"
+            
             marker_html += f"""
                 <tr>
                     <td>{category}</td>
-                    <td>{", ".join(all_genes_list)}</td>
+                    <td>{", ".join(genes)}</td>
                     <td>{present_html if present_genes else "None"} 
                         {f"<br>(Missing: {missing_html})" if missing_genes else ""}</td>
+                    <td>{recommendation}</td>
                 </tr>
             """
         
@@ -323,6 +355,12 @@ def generate_html_report(output_dir, extracted_data, all_genes, all_species, gen
             padding: 15px;
             border-radius: 5px;
             margin-top: 20px;
+        }}
+        .missing-genes {{
+            background: #fff3f3;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
         }}
     </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -389,16 +427,26 @@ def generate_html_report(output_dir, extracted_data, all_genes, all_species, gen
             
             {marker_html}
             
+            <div class="missing-genes">
+                <h4>Key Missing Markers:</h4>
+                <p>The following highly recommended phylogenetic markers were not found in your dataset:</p>
+                <ul>
+                    <li><strong>Universal markers:</strong> {', '.join([g for g in PHYLOGENETIC_MARKERS['universal']['Highly Recommended'] if g not in all_genes]) or 'None'}</li>
+                    <li><strong>Bacterial markers:</strong> {', '.join([g for g in PHYLOGENETIC_MARKERS['bacterial']['Housekeeping'] if g not in all_genes]) or 'None'}</li>
+                </ul>
+                <p>Consider including these markers in your analysis if possible.</p>
+            </div>
+            
             <div class="advice">
                 <h4>Phylogenetic Analysis Advice:</h4>
                 <ul>
-                    <li><strong>For plastomes:</strong> The combination of <em>rbcL + matK</em> is commonly used as a DNA barcode for plants. For deeper phylogeny, consider adding <em>ndhF</em> or <em>rpoC2</em>.</li>
-                    <li><strong>For mitochondrial genomes:</strong> <em>cox1</em> is the standard animal barcode. For deeper analysis, combine with <em>cob</em> and <em>nad</em> genes.</li>
-                    <li><strong>For bacteria:</strong> <em>16S rRNA</em> is standard for broad classification. For finer resolution, use protein-coding genes like <em>rpoB</em> or <em>gyrB</em>.</li>
-                    <li>When possible, use concatenated datasets of multiple genes for better resolution.</li>
-                    <li>For organelle genomes, consider using whole genome alignments if you have enough conserved regions.</li>
-                    <li>For closely related species, non-coding regions may provide better resolution.</li>
-                    <li>Always verify that your selected markers have appropriate evolutionary rates for your timescale.</li>
+                    <li><strong>For bacterial phylogeny:</strong> The combination of <em>rpoB + gyrB</em> provides excellent resolution at various taxonomic levels.</li>
+                    <li><strong>Minimum markers:</strong> Use at least 3-5 conserved protein-coding genes for robust phylogeny.</li>
+                    <li><strong>Gene selection:</strong> Choose genes with appropriate evolutionary rates for your timescale - slower for deep phylogeny, faster for recent divergences.</li>
+                    <li><strong>Concatenation:</strong> When possible, concatenate multiple genes to increase phylogenetic signal.</li>
+                    <li><strong>Partitioning:</strong> Partition your alignment by gene and codon position for better model fit.</li>
+                    <li><strong>Quality control:</strong> Check for recombination in your markers using tools like Gubbins or RDP4.</li>
+                    <li><strong>Alternative markers:</strong> If standard markers are missing, consider using ribosomal proteins (rps, rpl genes) as alternatives.</li>
                 </ul>
             </div>
         </div>
@@ -443,48 +491,55 @@ def generate_html_report(output_dir, extracted_data, all_genes, all_species, gen
             const ctx = document.getElementById('categoryChart').getContext('2d');
             const data = [{category_chart_data}];
             
-            const backgroundColors = [
-                'rgba(255, 99, 132, 0.7)',
-                'rgba(54, 162, 235, 0.7)',
-                'rgba(255, 206, 86, 0.7)',
-                'rgba(75, 192, 192, 0.7)',
-                'rgba(153, 102, 255, 0.7)',
-                'rgba(255, 159, 64, 0.7)',
-                'rgba(199, 199, 199, 0.7)',
-                'rgba(83, 102, 255, 0.7)',
-                'rgba(255, 99, 255, 0.7)'
-            ];
-            
-            new Chart(ctx, {{
-                type: 'doughnut',
-                data: {{
-                    labels: data.map(item => item.label),
-                    datasets: [{{
-                        data: data.map(item => item.value),
-                        backgroundColor: backgroundColors,
-                        borderWidth: 1
-                    }}]
-                }},
-                options: {{
-                    responsive: true,
-                    plugins: {{
-                        legend: {{
-                            position: 'right',
-                        }},
-                        tooltip: {{
-                            callbacks: {{
-                                label: function(context) {{
-                                    const label = context.label || '';
-                                    const value = context.raw || 0;
-                                    const total = context.dataset.data.reduce((a, b) => a + b, 0);
-                                    const percentage = Math.round((value / total) * 100);
-                                    return `${{label}}: ${{value}} (${{percentage}}%)`;
+            if (data.length > 0) {{
+                const backgroundColors = [
+                    'rgba(255, 99, 132, 0.7)',
+                    'rgba(54, 162, 235, 0.7)',
+                    'rgba(255, 206, 86, 0.7)',
+                    'rgba(75, 192, 192, 0.7)',
+                    'rgba(153, 102, 255, 0.7)',
+                    'rgba(255, 159, 64, 0.7)',
+                    'rgba(199, 199, 199, 0.7)',
+                    'rgba(83, 102, 255, 0.7)',
+                    'rgba(255, 99, 255, 0.7)'
+                ];
+                
+                new Chart(ctx, {{
+                    type: 'doughnut',
+                    data: {{
+                        labels: data.map(item => item.label),
+                        datasets: [{{
+                            data: data.map(item => item.value),
+                            backgroundColor: backgroundColors,
+                            borderWidth: 1
+                        }}]
+                    }},
+                    options: {{
+                        responsive: true,
+                        plugins: {{
+                            legend: {{
+                                position: 'right',
+                            }},
+                            tooltip: {{
+                                callbacks: {{
+                                    label: function(context) {{
+                                        const label = context.label || '';
+                                        const value = context.raw || 0;
+                                        const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                        const percentage = Math.round((value / total) * 100);
+                                        return `${{label}}: ${{value}} (${{percentage}}%)`;
+                                    }}
                                 }}
                             }}
                         }}
                     }}
-                }}
-            }});
+                }});
+            }} else {{
+                ctx.font = '16px Arial';
+                ctx.fillStyle = '#999';
+                ctx.textAlign = 'center';
+                ctx.fillText('No category data available', ctx.canvas.width/2, ctx.canvas.height/2);
+            }}
         }});
     </script>
 </body>
