@@ -5,6 +5,54 @@ from Bio.SeqRecord import SeqRecord
 from Bio.Seq import Seq
 from collections import defaultdict
 
+# Gene function categorization dictionary
+GENE_FUNCTIONS = {
+    # Metabolic genes
+    'metabolism': ['dehydrogenase', 'synthase', 'kinase', 'transferase', 'reductase', 
+                  'oxidase', 'oxygenase', 'carboxylase', 'decarboxylase', 'isomerase',
+                  'phosphatase', 'hydrolase', 'polymerase', 'ligase', 'lyase'],
+    
+    # Structural genes
+    'structural': ['actin', 'tubulin', 'collagen', 'keratin', 'myosin', 'fibrin',
+                  'laminin', 'fibronectin', 'elastin', 'spectrin', 'dystrophin'],
+    
+    # Transport genes
+    'transport': ['transporter', 'channel', 'porin', 'pump', 'carrier', 'symporter',
+                 'antiporter', 'permease', 'import', 'export', 'ATPase'],
+    
+    # Regulatory genes
+    'regulatory': ['transcription factor', 'repressor', 'activator', 'enhancer',
+                  'silencer', 'operator', 'promoter', 'regulator', 'homeobox'],
+    
+    # Signaling genes
+    'signaling': ['receptor', 'G protein', 'kinase', 'phosphatase', 'adapter',
+                 'second messenger', 'calmodulin', 'ras', 'mapk', 'jak', 'stat'],
+    
+    # Immune genes
+    'immune': ['antibody', 'immunoglobulin', 'MHC', 'histocompatibility', 'interleukin',
+              'interferon', 'complement', 'defensin', 'toll-like', 'lysozyme'],
+    
+    # Developmental genes
+    'developmental': ['homeobox', 'notch', 'wingless', 'hedgehog', 'bone morphogenetic',
+                     'fibroblast growth', 'transforming growth', 'sonic hedgehog'],
+    
+    # Housekeeping genes
+    'housekeeping': ['GAPDH', 'actin', 'tubulin', 'ubiquitin', 'ribosomal protein',
+                    'histone', 'elongation factor', 'RNA polymerase'],
+    
+    # Unknown/other
+    'unknown': ['unknown', 'hypothetical', 'uncharacterized', 'putative']
+}
+
+def categorize_gene(gene_name, product_description):
+    """Categorize gene based on its name and product description."""
+    search_text = f"{gene_name.lower()} {product_description.lower()}"
+    
+    for category, keywords in GENE_FUNCTIONS.items():
+        if any(keyword.lower() in search_text for keyword in keywords):
+            return category
+    return 'other'
+
 def sanitize_id(original_id):
     """Sanitizes sequence IDs for compatibility with phylogenetic software."""
     illegal_chars = [" ", ":", ",", ")", "(", ";", "]", "[", "'", '"', "|", "."]
@@ -41,6 +89,9 @@ def extract_feature_from_genbank(genbank_file, feature_type, feature_names=None)
                 # Get the primary gene name
                 gene_name = gene_names[0] if gene_names[0] != "Unknown" else product.split()[0]
                 
+                # Categorize the gene
+                category = categorize_gene(gene_name, product)
+                
                 # Extract sequence and create record
                 seq = feature.location.extract(record.seq)
                 seq_id = f"{accession}_{gene_name}"
@@ -53,7 +104,8 @@ def extract_feature_from_genbank(genbank_file, feature_type, feature_names=None)
                         id=seq_id,
                         description=f"{product} | {species}"
                     ),
-                    species
+                    species,
+                    category
                 ))
     except Exception as e:
         print(f"Error processing {genbank_file}: {e}")
@@ -65,6 +117,7 @@ def process_files(input_path, feature_type, feature_names=None):
     all_genes = set()
     all_species = set()
     seen_ids = set()
+    gene_categories = defaultdict(int)
     
     if os.path.isdir(input_path):
         files = [f for f in os.listdir(input_path) 
@@ -77,17 +130,18 @@ def process_files(input_path, feature_type, feature_names=None):
             filepath = os.path.join(input_path, filepath)
         
         features = extract_feature_from_genbank(filepath, feature_type, feature_names)
-        for gene_name, seq_record, species in features:
+        for gene_name, seq_record, species, category in features:
             # Skip exact duplicates
             if seq_record.id in seen_ids:
                 continue
                 
-            extracted_data[gene_name].append(seq_record)
+            extracted_data[gene_name].append((seq_record, category))
             all_genes.add(gene_name)
             all_species.add(species)
             seen_ids.add(seq_record.id)
+            gene_categories[category] += 1
     
-    return extracted_data, all_genes, all_species
+    return extracted_data, all_genes, all_species, gene_categories
 
 def export_to_fasta(output_dir, extracted_data):
     """Exports sequences to FASTA files with improved naming."""
@@ -96,15 +150,36 @@ def export_to_fasta(output_dir, extracted_data):
         clean_name = "".join(c if c.isalnum() else "_" for c in gene_name)
         fasta_path = os.path.join(output_dir, f"{clean_name}.fasta")
         with open(fasta_path, "w") as f:
-            SeqIO.write(seq_records, f, "fasta")
+            SeqIO.write([sr[0] for sr in seq_records], f, "fasta")
         print(f"Exported {len(seq_records)} sequences to {fasta_path}")
 
-def generate_html_report(output_dir, extracted_data, all_genes, all_species):
-    """Generates comprehensive HTML report with species information."""
+def generate_html_report(output_dir, extracted_data, all_genes, all_species, gene_categories):
+    """Generates comprehensive HTML report with species information and phylogenetic gene suggestions."""
     # Statistics calculation
     gene_stats = {gene: len(seqs) for gene, seqs in extracted_data.items()}
     total_sequences = sum(gene_stats.values())
     sorted_genes = sorted(gene_stats.items(), key=lambda x: (-x[1], x[0]))
+    
+    # Prepare category data
+    category_data = []
+    for category, count in gene_categories.items():
+        category_data.append({
+            'name': category.capitalize(),
+            'count': count,
+            'percentage': count/total_sequences,
+            'genes': defaultdict(int)
+        })
+    
+    # Count genes per category
+    for gene, seq_records in extracted_data.items():
+        category = seq_records[0][1]  # Get category from first record
+        for cat in category_data:
+            if cat['name'].lower() == category:
+                cat['genes'][gene] += len(seq_records)
+                break
+    
+    # Sort categories by count
+    category_data.sort(key=lambda x: -x['count'])
     
     # Prepare report sections
     common_genes = "\n".join(
@@ -118,7 +193,7 @@ def generate_html_report(output_dir, extracted_data, all_genes, all_species):
     )
     
     species_list = "\n".join(
-        f"<tr><td>{sp}</td><td>{sum(1 for seqs in extracted_data.values() for s in seqs if sp in s.description)}</td></tr>"
+        f"<tr><td>{sp}</td><td>{sum(1 for seqs in extracted_data.values() for s in seqs if sp in s[0].description)}</td></tr>"
         for sp in sorted(all_species)
     )
     
@@ -128,10 +203,84 @@ def generate_html_report(output_dir, extracted_data, all_genes, all_species):
             <td>{seq.id}</td>
             <td>{seq.description.split('|')[-1].strip()}</td>
             <td>{len(seq.seq)}</td>
+            <td>{category}</td>
         </tr>"""
-        for gene, seqs in extracted_data.items()
-        for seq in seqs
+        for gene, seq_records in extracted_data.items()
+        for seq, category in seq_records
     )
+    
+    category_chart_data = ",".join(
+        f"{{label: '{cat['name']}', value: {cat['count']}}}"
+        for cat in category_data
+    )
+    
+    category_table = "\n".join(
+        f"""<tr>
+            <td>{cat['name']}</td>
+            <td>{cat['count']}</td>
+            <td>{cat['percentage']:.1%}</td>
+            <td>{', '.join(sorted(cat['genes'].keys())[:5]) + ('...' if len(cat['genes']) > 5 else '')}</td>
+        </tr>"""
+        for cat in category_data
+    )
+    
+    # Phylogenetic marker gene suggestions
+    PHYLOGENETIC_MARKERS = {
+        'plastome': {
+            'Highly Recommended': ['rbcL', 'matK', 'ndhF', 'atpB', 'rpoC2'],
+            'Recommended': ['psbA', 'psbB', 'psbC', 'psbD', 'rpoB', 'ycf1', 'ycf2'],
+            'rRNA genes': ['rrn16', 'rrn23', 'rrn5', 'rrn4.5'],
+            'tRNA genes': ['trnK-UUU', 'trnL-UAA', 'trnF-GAA', 'trnH-GUG']
+        },
+        'mitochondrial': {
+            'Protein-coding': ['cox1', 'cox2', 'cox3', 'cob', 'nad1', 'nad2', 'nad3', 'nad4', 'nad5', 'nad6', 'atp6', 'atp8'],
+            'rRNA genes': ['rrnL', 'rrnS'],
+            'tRNA genes': ['trnM', 'trnW', 'trnQ', 'trnY']
+        },
+        'bacterial': {
+            'Universal': ['16S rRNA', '23S rRNA'],
+            'Protein-coding': ['rpoB', 'gyrB', 'recA', 'dnaK', 'tuf', 'fusA'],
+            'Housekeeping': ['rpoD', 'groEL', 'atpD', 'dnaJ']
+        }
+    }
+    
+    # Prepare phylogenetic markers section
+    marker_html = ""
+    for genome_type, categories in PHYLOGENETIC_MARKERS.items():
+        marker_html += f"""
+        <div class="marker-category">
+            <h3>{genome_type.capitalize()} Markers</h3>
+            <table>
+                <tr><th>Category</th><th>Suggested Genes</th><th>In Your Data</th></tr>
+        """
+        
+        for category, genes in categories.items():
+            present_genes = []
+            missing_genes = []
+            
+            for gene in genes:
+                if gene.lower() in (g.lower() for g in all_genes):
+                    present_genes.append(gene)
+                else:
+                    missing_genes.append(gene)
+            
+            present_html = "<span style='color:green'>" + ", ".join(present_genes) + "</span>" if present_genes else "-"
+            missing_html = "<span style='color:red'>" + ", ".join(missing_genes) + "</span>" if missing_genes else "-"
+            
+            all_genes_list = present_genes + missing_genes
+            marker_html += f"""
+                <tr>
+                    <td>{category}</td>
+                    <td>{", ".join(all_genes_list)}</td>
+                    <td>{present_html if present_genes else "None"} 
+                        {f"<br>(Missing: {missing_html})" if missing_genes else ""}</td>
+                </tr>
+            """
+        
+        marker_html += """
+            </table>
+        </div>
+        """
     
     html_content = f"""
 <html>
@@ -156,7 +305,27 @@ def generate_html_report(output_dir, extracted_data, all_genes, all_species):
         .tab.active {{ background: #2E86C1; color: white; }}
         .tab-content {{ display: none; }}
         .tab-content.active {{ display: block; }}
+        #categoryChart {{ width: 100%; height: 400px; margin: 20px 0; }}
+        .two-column {{ display: flex; gap: 20px; }}
+        .column {{ flex: 1; }}
+        .marker-category {{
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+        }}
+        .marker-category h3 {{
+            margin-top: 0;
+            color: #2E86C1;
+        }}
+        .advice {{
+            background: #e8f4f8;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 20px;
+        }}
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
     <h1>GenBank Feature Extraction Report</h1>
@@ -177,10 +346,26 @@ def generate_html_report(output_dir, extracted_data, all_genes, all_species):
     </div>
     
     <div class="section">
+        <h2>Functional Categories</h2>
+        <div class="two-column">
+            <div class="column">
+                <canvas id="categoryChart"></canvas>
+            </div>
+            <div class="column">
+                <table>
+                    <tr><th>Category</th><th>Count</th><th>Percentage</th><th>Example Genes</th></tr>
+                    {category_table}
+                </table>
+            </div>
+        </div>
+    </div>
+    
+    <div class="section">
         <h2>Gene Statistics</h2>
         <div class="tabs">
             <div class="tab active" onclick="showTab('common-genes')">Most Common</div>
             <div class="tab" onclick="showTab('all-genes')">All Genes</div>
+            <div class="tab" onclick="showTab('phylogenetic-markers')">Phylogenetic Markers</div>
         </div>
         
         <div id="common-genes" class="tab-content active">
@@ -195,6 +380,27 @@ def generate_html_report(output_dir, extracted_data, all_genes, all_species):
                 <tr><th>Gene</th><th>Count</th><th>Percentage</th></tr>
                 {all_genes_list}
             </table>
+        </div>
+        
+        <div id="phylogenetic-markers" class="tab-content">
+            <h3>Suggested Genes for Phylogenetic Analysis</h3>
+            <p>Based on your extracted genes and common phylogenetic markers, here are recommendations 
+            for genes to use in your phylogenetic analysis:</p>
+            
+            {marker_html}
+            
+            <div class="advice">
+                <h4>Phylogenetic Analysis Advice:</h4>
+                <ul>
+                    <li><strong>For plastomes:</strong> The combination of <em>rbcL + matK</em> is commonly used as a DNA barcode for plants. For deeper phylogeny, consider adding <em>ndhF</em> or <em>rpoC2</em>.</li>
+                    <li><strong>For mitochondrial genomes:</strong> <em>cox1</em> is the standard animal barcode. For deeper analysis, combine with <em>cob</em> and <em>nad</em> genes.</li>
+                    <li><strong>For bacteria:</strong> <em>16S rRNA</em> is standard for broad classification. For finer resolution, use protein-coding genes like <em>rpoB</em> or <em>gyrB</em>.</li>
+                    <li>When possible, use concatenated datasets of multiple genes for better resolution.</li>
+                    <li>For organelle genomes, consider using whole genome alignments if you have enough conserved regions.</li>
+                    <li>For closely related species, non-coding regions may provide better resolution.</li>
+                    <li>Always verify that your selected markers have appropriate evolutionary rates for your timescale.</li>
+                </ul>
+            </div>
         </div>
     </div>
     
@@ -214,6 +420,7 @@ def generate_html_report(output_dir, extracted_data, all_genes, all_species):
                 <th>Accession</th>
                 <th>Species</th>
                 <th>Length</th>
+                <th>Category</th>
             </tr>
             {sequences_table}
         </table>
@@ -230,6 +437,55 @@ def generate_html_report(output_dir, extracted_data, all_genes, all_species):
             document.getElementById(tabId).classList.add('active');
             event.currentTarget.classList.add('active');
         }}
+        
+        // Draw category chart
+        document.addEventListener('DOMContentLoaded', function() {{
+            const ctx = document.getElementById('categoryChart').getContext('2d');
+            const data = [{category_chart_data}];
+            
+            const backgroundColors = [
+                'rgba(255, 99, 132, 0.7)',
+                'rgba(54, 162, 235, 0.7)',
+                'rgba(255, 206, 86, 0.7)',
+                'rgba(75, 192, 192, 0.7)',
+                'rgba(153, 102, 255, 0.7)',
+                'rgba(255, 159, 64, 0.7)',
+                'rgba(199, 199, 199, 0.7)',
+                'rgba(83, 102, 255, 0.7)',
+                'rgba(255, 99, 255, 0.7)'
+            ];
+            
+            new Chart(ctx, {{
+                type: 'doughnut',
+                data: {{
+                    labels: data.map(item => item.label),
+                    datasets: [{{
+                        data: data.map(item => item.value),
+                        backgroundColor: backgroundColors,
+                        borderWidth: 1
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    plugins: {{
+                        legend: {{
+                            position: 'right',
+                        }},
+                        tooltip: {{
+                            callbacks: {{
+                                label: function(context) {{
+                                    const label = context.label || '';
+                                    const value = context.raw || 0;
+                                    const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                    const percentage = Math.round((value / total) * 100);
+                                    return `${{label}}: ${{value}} (${{percentage}}%)`;
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+            }});
+        }});
     </script>
 </body>
 </html>
@@ -253,7 +509,7 @@ def main():
     
     args = parser.parse_args()
     
-    extracted_data, all_genes, all_species = process_files(
+    extracted_data, all_genes, all_species, gene_categories = process_files(
         args.input_path,
         args.feature_type,
         [name.lower() for name in args.feature_names] if args.feature_names else None
@@ -261,7 +517,7 @@ def main():
     
     os.makedirs(args.output_dir, exist_ok=True)
     export_to_fasta(args.output_dir, extracted_data)
-    generate_html_report(args.output_dir, extracted_data, all_genes, all_species)
+    generate_html_report(args.output_dir, extracted_data, all_genes, all_species, gene_categories)
 
 if __name__ == "__main__":
     main()
