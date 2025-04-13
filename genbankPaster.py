@@ -44,6 +44,73 @@ GENE_FUNCTIONS = {
     'unknown': ['unknown', 'hypothetical', 'uncharacterized', 'putative']
 }
 
+def count_all_features(genbank_file):
+    """Count all features (CDS, tRNA, rRNA) in a GenBank file."""
+    counts = {
+        'CDS': 0,
+        'tRNA': 0,
+        'rRNA': 0,
+        'other': 0
+    }
+    
+    try:
+        record = SeqIO.read(genbank_file, "genbank")
+        for feature in record.features:
+            if feature.type in counts:
+                counts[feature.type] += 1
+            else:
+                counts['other'] += 1
+    except Exception as e:
+        print(f"Error counting features in {genbank_file}: {e}")
+    
+    return counts
+
+def get_genome_summary(input_path):
+    """Generate summary statistics for all GenBank files."""
+    summary = {
+        'total_files': 0,
+        'total_CDS': 0,
+        'total_tRNA': 0,
+        'total_rRNA': 0,
+        'total_other': 0,
+        'per_file': []
+    }
+    
+    if os.path.isdir(input_path):
+        files = [f for f in os.listdir(input_path) 
+                if f.lower().endswith((".gb", ".genbank", ".gbk"))]
+    else:
+        files = [input_path]
+    
+    for filepath in files:
+        if os.path.isdir(input_path):
+            filepath = os.path.join(input_path, filepath)
+        
+        counts = count_all_features(filepath)
+        summary['total_files'] += 1
+        summary['total_CDS'] += counts['CDS']
+        summary['total_tRNA'] += counts['tRNA']
+        summary['total_rRNA'] += counts['rRNA']
+        summary['total_other'] += counts['other']
+        
+        # Get the record description for the filename
+        try:
+            record = SeqIO.read(filepath, "genbank")
+            description = record.description
+        except:
+            description = os.path.basename(filepath)
+        
+        summary['per_file'].append({
+            'filename': os.path.basename(filepath),
+            'description': description,
+            'CDS': counts['CDS'],
+            'tRNA': counts['tRNA'],
+            'rRNA': counts['rRNA'],
+            'other': counts['other']
+        })
+    
+    return summary
+
 def categorize_gene(gene_name, product_description):
     """Categorize gene based on its name and product description."""
     search_text = f"{gene_name.lower()} {product_description.lower()}"
@@ -153,7 +220,7 @@ def export_to_fasta(output_dir, extracted_data):
             SeqIO.write([sr[0] for sr in seq_records], f, "fasta")
         print(f"Exported {len(seq_records)} sequences to {fasta_path}")
 
-def generate_html_report(output_dir, extracted_data, all_genes, all_species, gene_categories):
+def generate_html_report(output_dir, extracted_data, all_genes, all_species, gene_categories, genome_summary=None):
     """Generates comprehensive HTML report with species information and phylogenetic gene suggestions."""
     # Statistics calculation
     gene_stats = {gene: len(seqs) for gene, seqs in extracted_data.items()}
@@ -181,6 +248,52 @@ def generate_html_report(output_dir, extracted_data, all_genes, all_species, gen
     
     # Sort categories by count
     category_data.sort(key=lambda x: -x['count'])
+    
+    # Prepare genome summary section if available
+    genome_summary_html = ""
+    if genome_summary:
+        # Summary statistics
+        genome_summary_html = f"""
+        <div class="section">
+            <h2>Genome Feature Summary</h2>
+            <div class="stats">
+                <div class="stat-box">
+                    <div class="stat-value">{genome_summary['total_files']}</div>
+                    <div>GenBank Files</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value">{genome_summary['total_CDS']}</div>
+                    <div>Total CDS</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value">{genome_summary['total_tRNA']}</div>
+                    <div>Total tRNA</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value">{genome_summary['total_rRNA']}</div>
+                    <div>Total rRNA</div>
+                </div>
+            </div>
+            
+            <h3>Feature Counts Per File</h3>
+            <table>
+                <tr>
+                    <th>Filename</th>
+                    <th>Description</th>
+                    <th>CDS</th>
+                    <th>tRNA</th>
+                    <th>rRNA</th>
+                    <th>Other</th>
+                </tr>
+                {"".join(
+                    f"<tr><td>{file['filename']}</td><td>{file['description']}</td>"
+                    f"<td>{file['CDS']}</td><td>{file['tRNA']}</td>"
+                    f"<td>{file['rRNA']}</td><td>{file['other']}</td></tr>"
+                    for file in genome_summary['per_file']
+                )}
+            </table>
+        </div>
+        """
     
     # Prepare report sections
     common_genes = (
@@ -224,7 +337,7 @@ def generate_html_report(output_dir, extracted_data, all_genes, all_species, gen
         )
         if extracted_data
         else "<tr><td colspan='5'>No sequences found</td></tr>"
-)
+    )
     
     category_chart_data = ",".join(
         f"{{label: '{cat['name']}', value: {cat['count']}}}"
@@ -367,6 +480,8 @@ def generate_html_report(output_dir, extracted_data, all_genes, all_species, gen
 </head>
 <body>
     <h1>GenBank Feature Extraction Report</h1>
+    
+    {genome_summary_html if genome_summary else ""}
     
     <div class="stats">
         <div class="stat-box">
@@ -561,8 +676,15 @@ def main():
                        help="Specific gene/product names to extract")
     parser.add_argument("--output_dir", default="genbank_output",
                        help="Output directory (default: genbank_output)")
+    parser.add_argument("--full_summary", action="store_true",
+                       help="Generate full genome feature summary (CDS, tRNA, rRNA counts)")
     
     args = parser.parse_args()
+    
+    # Get genome summary if requested
+    genome_summary = None
+    if args.full_summary:
+        genome_summary = get_genome_summary(args.input_path)
     
     extracted_data, all_genes, all_species, gene_categories = process_files(
         args.input_path,
@@ -572,7 +694,7 @@ def main():
     
     os.makedirs(args.output_dir, exist_ok=True)
     export_to_fasta(args.output_dir, extracted_data)
-    generate_html_report(args.output_dir, extracted_data, all_genes, all_species, gene_categories)
+    generate_html_report(args.output_dir, extracted_data, all_genes, all_species, gene_categories, genome_summary)
 
 if __name__ == "__main__":
     main()
